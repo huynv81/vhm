@@ -1,4 +1,4 @@
-# Git flow: feature → release → main, staging chỉ nhận merge
+# Git flow: test staging trước, release sau
 
 ## Mục tiêu
 
@@ -8,23 +8,31 @@ Git nhận ra phần đã có và chỉ xét thay đổi mới.
 ## Flow chính
 
 ```mermaid
-flowchart TD
-    M[main] -->|Tạo branch| F[feature]
-    F -->|Merge để test| S[staging]
-    M -->|Tạo branch| R[release]
-    F -->|Merge nếu được chọn| R
-    R -->|Merge sau khi kiểm thử| M
-    M -->|Merge đồng bộ| S
+sequenceDiagram
+    participant M as main
+    participant F as feature
+    participant S as staging
+    participant R as release
+    M->>F: Tạo feature từ main, phát triển code
+    F->>S: Merge feature để test
+    S-->>F: QA đạt, ghi nhận feature SHA được duyệt
+    M->>R: Tạo release từ main
+    F->>R: Merge cùng feature/SHA đã test và được chọn
+    R->>M: Merge sau khi kiểm thử release đạt
+    M->>S: Merge đồng bộ
 ```
+
+Mũi tên “QA đạt” là thông báo kết quả kiểm thử, không phải merge staging vào feature.
+Chỉ đưa feature vào release sau khi QA trên staging đạt và feature được chọn phát hành.
 
 ## Các bước thực hiện
 
 | Bước | Thực hiện | Kết quả |
 | --- | --- | --- |
-| 1 | Tạo feature từ `main` | Feature không mang theo các thay đổi chưa release trên staging |
-| 2 | Merge `feature → staging`, kiểm thử | Staging nhận feature để test |
-| 3 | Tạo release từ `main` | Release bắt đầu từ nền main |
-| 4 | Merge cùng feature được chọn vào release | Release chỉ nhận các feature được duyệt |
+| 1 | Tạo feature từ `main`, phát triển code | Feature không mang theo các thay đổi chưa release trên staging |
+| 2 | Merge `feature → staging` | Staging nhận feature để test |
+| 3 | QA test trên staging | Có lỗi: sửa trên feature, merge lại staging và test lại; chỉ đi tiếp khi đạt |
+| 4 | Tạo release từ `main`, merge cùng feature/SHA đã test và được chọn | Release chỉ nhận feature đã đạt QA và được duyệt |
 | 5 | Kiểm thử release, merge `release → main` | Main nhận feature và release fix |
 | 6 | Merge `main → staging` | Staging nhận fix mới và giữ feature đang phát triển |
 
@@ -47,9 +55,12 @@ Các bước merge thực hiện qua MR trên GitLab. Tên ticket và ngày tron
 ## Nguyên tắc bắt buộc của flow
 
 - Staging chỉ nhận merge; không merge `staging → main/release/feature`.
+- Feature phải được merge vào staging và QA đạt trước khi được đưa vào release.
 - Dùng **cùng feature branch, cùng commit** cho staging và release.
 - Dùng merge giữ ancestry; không cherry-pick, rebase hoặc squash riêng các MR trong flow.
 - Không rewrite commit feature sau khi đã merge vào staging. Nếu cần sửa, thêm commit mới.
+- Fix lỗi feature trên feature branch, merge lại staging và test lại. Nếu feature có
+  commit mới sau QA, xác minh/test SHA mới trước khi đưa vào release.
 - Giữ feature branch đến khi release đã nhận đủ commit; không xóa ngay sau MR staging.
 - Nếu sửa lỗi lúc UAT, tạo fix từ release và merge vào release. Staging nhận fix qua
   `release → main → staging`.
@@ -77,8 +88,8 @@ Flow mới không tự sửa lịch sử đã lệch. Với repository hiện t�
 
 ## Ví dụ: test 10 feature, chỉ release 5
 
-Giả sử F1…F10 được tạo từ main. Staging nhận cả 10 để test; release chỉ nhận F1…F5,
-giữ chính các commit feature đã merge vào staging.
+Giả sử F1…F10 được tạo từ main. Staging nhận cả 10 để test. Sau QA, F1…F5 đạt và được
+chọn phát hành; release nhận chính các commit feature đã merge và test trên staging.
 
 | Thời điểm | Main | Staging |
 | --- | --- | --- |
@@ -109,6 +120,7 @@ công trên staging với 10 feature chưa chứng minh tổ hợp 5 feature ho�
 ## Checklist cho developer và AI agent
 
 - Xác định đúng source/target và SHA đang review.
+- Feature SHA đưa vào release đã có trên staging và được QA duyệt.
 - Chọn merge giữ ancestry; không bật squash cho các MR của flow.
 - Feature được chọn release phải có đủ dependency.
 - Kiểm thử release thực tế; test staging không thay thế test release chọn lọc.

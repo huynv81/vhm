@@ -1,285 +1,286 @@
-# GitFlow: release, hotfix và đồng bộ branch có giữ ancestry
+# Git branch flow: staging chỉ nhận merge, release từ main
 
-## 1. Mục đích và phạm vi
+## 1. Quy tắc nền tảng và mục tiêu
 
-Tài liệu này đề xuất quy trình Git cho repository `vhm-ocr-ekyc`, dành cho developer,
-reviewer, release owner và AI agent. Mục tiêu là giữ quan hệ lịch sử giữa các branch,
-đưa đúng thay đổi vào đúng đợt release và làm cho các MR đồng bộ phản ánh delta cần review.
+Quy tắc team đã xác nhận: **không merge staging vào bất kỳ branch nào**.
+Quy tắc này nói về hướng merge: staging không được làm source của một lần merge sang
+branch khác. Nó không tự động cấm tạo branch mới từ staging.
 
-Đây là đề xuất quy trình, không phải bằng chứng rằng GitLab đã được cấu hình hoặc team
-đã áp dụng toàn bộ quy tắc dưới đây. `AGENTS.md`, quy định quyền thao tác và các quyết
-định release đã được phê duyệt vẫn có hiệu lực. Các lệnh là hướng dẫn; việc đọc tài liệu
-không tự cấp quyền push, merge MR, tạo tag hoặc deploy.
+Tài liệu đề xuất feature phát hành và release được tạo từ main, rồi cùng commit feature
+được merge vào staging/release. Đây là lựa chọn thiết kế để release chọn lọc và tránh
+đưa lịch sử staging vào production, không phải một lệnh cấm tạo branch được suy ra từ
+rule của team. Các chính sách còn lại cần đối chiếu quyết định team và setting GitLab.
 
-Quy trình không thay đổi kiến trúc ứng dụng, business contract hoặc cách chạy Liquibase.
-Nếu một merge sửa production code, phải thực hiện quality gate của repository.
+Mục tiêu là staging nhận các thay đổi production mới mà không hiển thị lại hàng loạt
+feature đã có, đồng thời release chỉ chứa các feature được duyệt.
 
-### 1.1 Cách đọc và chọn đúng flow
+Phân biệt rule đã xác nhận và cách triển khai được đề xuất:
 
-Nếu mới làm quen GitFlow, đọc bảng này trước, sau đó đọc các bước ở mục tương ứng.
-`X → Y` nghĩa là mở MR lấy thay đổi từ X đưa vào Y; Y là branch được cập nhật.
+- Rule: không mở MR `staging → main`, `staging → release` hoặc `staging → feature`.
+- Tạo branch từ staging: thao tác này tự nó không vi phạm rule hướng merge.
+- Đề xuất cho feature đi production: tạo từ main để có base sạch cho release chọn lọc.
+- Đề xuất cho branch test/fix/helper tạo từ staging: merge trở lại staging; nếu muốn
+  đưa sang main/release, phải kiểm tra toàn bộ ancestry và scope đi kèm.
+- Staging có thể nhận MR từ feature, fix, hotfix, release hoặc main theo phạm vi được duyệt.
 
-| Bạn đang cần làm gì? | Flow | Đọc mục |
-| --- | --- | --- |
-| Phát triển tính năng mới hoặc sửa lỗi chưa lên production | `staging → feature → MR staging` | 5.1 |
-| Chuẩn bị một đợt release | `staging → cut release → MR main → MR staging` | 5.2–5.6 |
-| QA phát hiện lỗi trong release đang UAT | `release → fix → MR release → release tiếp tục UAT` | 5.3 |
-| Production đang lỗi, cần sửa ngay | `production/main → hotfix → MR main → đồng bộ staging/release` | 8 |
-| Chỉ muốn nhận một commit, ví dụ bản vá `pom.xml` | `target → backport → cherry-pick commit → MR target` | 9 |
-| Main/staging code giống nhưng lịch sử bị lệch | `staging → integration branch → merge main → review → MR staging` | 11.2 |
+Ví dụ `git switch -c fix/staging-only origin/staging` chỉ tạo tên branch mới tại một
+commit. Nó chưa thực hiện merge. Tuy nhiên branch mới chứa toàn bộ ancestry staging
+tại thời điểm tạo. Merge branch đó vào main có thể đưa các commit staging khác vào
+main, dù GitLab hiển thị source name là `fix/staging-only`. Không thể chỉ dựa vào tên
+branch để kết luận đã giữ đúng phạm vi release.
 
-Trong cột Flow, `cut`/`tạo branch` là đặt tên branch mới tại một commit hiện có.
-`MR` là review và tích hợp thay đổi; tạo branch một mình chưa đưa thay đổi vào branch đích.
+Đọc tài liệu không tự cấp quyền commit, push, merge MR, tạo tag, thay đổi setting hay
+deploy. Quyền thao tác theo yêu cầu đang thực hiện và `AGENTS.md` vẫn có hiệu lực.
+Tài liệu này không thay đổi kiến trúc hoặc business contract.
 
-### 1.2 Các thuật ngữ cần biết
+### 1.1 Chọn flow trước khi chạy Git
 
-| Thuật ngữ | Hiểu theo thao tác thực tế |
-| --- | --- |
-| Branch | Một tên trỏ vào commit; tạo branch không tạo bản sao độc lập của lịch sử |
-| Commit/SHA | Một mốc snapshot và lịch sử; SHA là mã định danh của mốc đó |
-| `origin/staging` | Trạng thái staging trên remote được lần fetch gần nhất ghi nhận |
-| `staging` local | Branch trên máy bạn; có thể cũ hơn `origin/staging` |
-| `git fetch origin` | Cập nhật thông tin remote; không tự merge vào branch đang làm |
-| Source/target | Source cung cấp thay đổi; target nhận thay đổi |
-| Cut release | Tạo release branch tại SHA staging đã chọn, giữ nguyên lịch sử đến SHA đó |
-| Freeze | Release không nhận thêm feature mới; vẫn có thể nhận fix được duyệt |
-| UAT | Kiểm thử chấp nhận trước khi duyệt release |
-| Back-merge | Merge thay đổi production/release trở lại branch tích hợp |
-| Backport | Chuyển một patch cụ thể sang branch khác, thường bằng cherry-pick |
-| Resolve conflict | Quyết định nội dung cuối cùng ở vùng Git không thể tự kết hợp |
+| Nhu cầu | Tạo branch từ đâu? | MR đi đâu? | Đọc mục |
+| --- | --- | --- | --- |
+| Feature mới | Main | Feature → staging để test; cùng feature → release để phát hành | 5 |
+| Release chọn lọc | Main | Các feature được chọn → release → main → staging | 6 |
+| Sửa lỗi lúc UAT | Release | Fix → release; đồng bộ cùng fix về staging nếu cần | 7 |
+| Hotfix production | Production SHA phù hợp trên main | Hotfix → main → staging; release đang UAT nhận fix nếu cần | 8 |
+| Nhận một commit như bản vá pom.xml | Branch đích | Backport → branch đích | 9 |
+| Sửa lịch sử main/staging đã lệch | Staging, làm branch hỗ trợ đích | Merge main vào helper rồi helper → staging | 11 |
 
-Những command bên dưới là ví dụ theo từng tình huống, không phải một script chạy từ đầu
-đến cuối. Chỉ chạy bước sau khi bước trước thành công và đúng tình huống đang xử lý.
+Trong bảng, “tạo từ” chỉ base của branch mới. “X → Y” là hướng MR: X cung cấp thay
+đổi, Y nhận thay đổi. Tạo branch không tự merge hoặc deploy.
 
-## 2. First principles: Git xác định thay đổi như thế nào?
+Các command là ví dụ theo từng tình huống. Thay tên ticket/ngày/SHA bằng giá trị thật;
+không chạy toàn bộ tài liệu như một script.
 
-### 2.1 Snapshot và ancestry là hai thuộc tính khác nhau
+## 2. Những khái niệm cần hiểu
 
-Một commit lưu snapshot của cây file, liên kết đến các parent và metadata.
-Ancestry là quan hệ có thể đi ngược từ một commit đến commit khác qua các liên kết parent.
-Git không suy ra ancestry chỉ vì hai file hoặc hai patch có nội dung giống nhau.
+### 2.1 Branch, snapshot và ancestry
 
-Nếu cherry-pick commit `C` lên một lịch sử khác, thường nhận được commit mới `C'`:
+Branch là tên trỏ vào commit. Commit có snapshot file, parent và metadata.
+Ancestry là khả năng lần ngược qua các parent để đến một commit khác.
+
+Hai commit có patch giống nhau nhưng khác parent vẫn thường có SHA khác. Cherry-pick
+copy patch sang lịch sử mới, không nối lịch sử nguồn:
 
 ```text
-A---B---C       staging
-     \
-      D---C'    main
+A---F       feature gốc, staging đã nhận F
+ \
+  F'        release nhận patch F bằng cherry-pick
 ```
 
-Patch của `C` và `C'` có thể tương đương. Tuy nhiên `C` không trở thành ancestor của
-`main` chỉ nhờ cherry-pick. Git có thể phát hiện patch tương đương bằng một số lệnh
-so sánh, nhưng merge-base vẫn được xác định bằng commit graph.
+F và F' có thể sửa cùng code. Tuy nhiên F không trở thành ancestor của release nhờ
+cherry-pick. Đây là lý do code gần giống nhưng MR đồng bộ vẫn có thể rất lớn.
 
-Merge commit có hai parent, nối hai lịch sử thật sự. Nội dung merge commit được xác
-định bằng kết quả merge và cách resolve conflict, không tự động bằng snapshot source.
+Merge giữ ancestry đưa **cùng commit F** vào lịch sử của cả hai nơi. Merge commit trên
+staging và release có thể khác SHA; điều cần dùng chung là commit feature F.
 
-### 2.2 Merge dùng ba trạng thái
+### 2.2 Source, target và remote-tracking ref
 
-Với `source → target`, Git xét:
+| Thuật ngữ | Ý nghĩa |
+| --- | --- |
+| Source | Branch cung cấp thay đổi cho MR |
+| Target | Branch nhận thay đổi |
+| `origin/main` | Main trên remote được lần fetch gần nhất ghi nhận |
+| `main` local | Branch main trên máy, có thể cũ hơn remote |
+| `git fetch origin` | Cập nhật remote-tracking refs, không tự merge vào branch đang làm |
+| Cut release | Tạo release tại một SHA main được chọn |
+| Freeze | Chốt danh sách feature release; vẫn nhận fix được duyệt |
+| UAT | Kiểm thử chấp nhận release candidate |
+| Back-merge | Đưa kết quả production trở lại staging bằng merge |
+| Backport | Chuyển chọn lọc một patch |
+| Conflict resolution | Quyết định nội dung cuối cùng ở phần Git không tự kết hợp được |
 
-1. `base`: tổ tiên chung dùng làm cơ sở merge.
-2. `target`: trạng thái branch nhận thay đổi.
-3. `source`: trạng thái branch cung cấp thay đổi.
+Main là lịch sử release production được duyệt. Head main không nhất thiết là phiên
+bản đang chạy nếu deployment chưa hoàn tất. Hotfix phải xác định production SHA thật.
 
-Git kết hợp thay đổi `base → target` và `base → source`. Các file được thêm trên cả
-hai lịch sử có thể gây `add/add` conflict; các vùng cùng bị sửa có thể gây content
-conflict. Hai branch có code gần giống nhau vẫn có thể conflict nếu base rất cũ.
+### 2.3 MR nhiều file khác với merge thật sửa nhiều file
 
-### 2.3 Phân biệt ba loại kết quả
+Git merge xét ba trạng thái: merge-base, target và source. Nó kết hợp các thay đổi
+từ base đến mỗi phía, không thay toàn bộ target bằng snapshot source.
 
-| Loại | Lệnh hoặc phép so sánh | Ý nghĩa |
+| Phép kiểm tra | Lệnh | Câu hỏi được trả lời |
 | --- | --- | --- |
-| MR diff thông thường | `git diff target...source` | Từ merge-base đến source; có thể chứa thay đổi target đã có bằng SHA khác |
-| So hai snapshot | `git diff target source` | Nội dung hiện tại của hai branch khác nhau thế nào |
-| Delta sau merge thử | `git diff target-before-merge HEAD` | Những thay đổi thật sự đưa vào target sau merge và resolve conflict |
+| MR diff thông thường | `git diff target...source` | Source thay đổi gì kể từ merge-base? |
+| So hai snapshot | `git diff target source` | Hai trạng thái hiện tại khác nhau ở đâu? |
+| Delta cuối cùng | `git diff target_before_sha result_sha` | Merge và resolve thực sự đưa gì vào target? |
 
-Không dùng hai snapshot để kết luận chính xác kết quả merge: source có thể thiếu
-feature mới trên target, nhưng three-way merge vẫn giữ feature đó. Kết quả MR trên
-GitLab còn phụ thuộc phiên bản diff và refs của MR; phải kiểm tra đúng SHA đang review.
+Các tên ref/SHA trong bảng là ví dụ. Diff hiển thị trên GitLab còn phụ thuộc đúng refs
+và phiên bản diff của MR. Không dùng số file MR để khẳng định số file merge thực sự đổi.
 
-Giữ ancestry giúp loại bỏ việc hiển thị lại thay đổi cũ đã được merge. Nó không bảo
-đảm source chỉ sửa một file: nếu source có thêm các thay đổi hợp lệ khác, chúng vẫn
-thuộc phạm vi cần xem xét.
-
-## 3. Vai trò của branch và các invariant
-
-| Branch | Tạo từ | Vai trò | Nơi nhận thay đổi |
-| --- | --- | --- | --- |
-| `main` | Lịch sử production | Lịch sử release được duyệt; release tag xác định phiên bản deploy cụ thể | Release, hotfix |
-| `staging` | Lịch sử tích hợp | Tích hợp feature cho các release tiếp theo; tương đương `develop` | Feature, back-merge, backport được duyệt |
-| `feature/<owner>/<ticket>` | `origin/staging` | Một feature hoặc sửa lỗi phát triển thông thường | MR vào `staging` |
-| `release/YYYYMMDD` | Một SHA đã chọn của `origin/staging` | Đóng băng phạm vi release, nhận release fix | MR vào `main`, đồng bộ về `staging` |
-| `fix/<owner>/<ticket>-release` | Release đang xử lý | Sửa lỗi thuộc release đã đóng băng | MR vào release |
-| `hotfix/<owner>/<ticket>` | SHA production cần sửa trên `main` | Sửa lỗi production | MR vào `main`, sau đó đồng bộ về các nhánh liên quan |
-| `backport/<owner>/<ticket>` | Branch đích cần nhận patch | Chuyển chọn lọc một thay đổi | MR vào branch đích |
-
-Tên branch có thể điều chỉnh theo convention của team; quan hệ tạo branch phải giữ
-đúng như bảng. `main` chỉ trùng phiên bản đang chạy khi deploy đã hoàn tất và không có
-release mới chờ deploy; không tự suy ra trạng thái production từ tên branch.
-
-Các invariant bắt buộc của quy trình đề xuất:
-
-1. Release được cắt từ SHA thật của `staging`, không dựng lại bằng hàng loạt cherry-pick.
-2. Merge giữa các branch lâu dài giữ nguyên ancestry; không squash toàn bộ release.
-3. Mọi release fix và hotfix phải được chuyển về `staging` và release đang hoạt động
-   nếu cần, với MR hoặc quyết định không áp dụng có ghi nhận rõ ràng.
-4. Không đưa feature của release sau vào một release đã đóng băng bằng merge toàn bộ `staging`.
-5. Không rewrite lịch sử đã chia sẻ để làm đẹp MR diff.
-6. Resolve conflict là quyết định về nội dung; phải review delta cuối cùng và chạy kiểm tra.
-7. Merge một commit vào lịch sử không chứng minh tất cả hành vi của commit đó được giữ.
-
-## 4. Chính sách merge trên GitLab
-
-| MR | Phương thức đề xuất | Điều kiện |
-| --- | --- | --- |
-| `feature → staging` | Squash hoặc merge giữ ancestry | Nếu squash, xóa/kết thúc feature và tạo feature tiếp theo từ target mới |
-| `release → main` | Merge commit, không squash/rebase source | Release SHA được kiểm thử phải là ancestor của kết quả |
-| `main → staging` | Merge giữ ancestry, không squash | Review toàn bộ delta production cần chuyển về |
-| `release → staging` | Merge giữ ancestry, không squash | Áp dụng biến thể ở mục 7 |
-| `hotfix → main` | Merge giữ ancestry, không squash | Giữ hotfix SHA để truy vết và đồng bộ |
-| `hotfix → release/staging` | Merge giữ ancestry | Source không kéo theo thay đổi ngoài phạm vi được duyệt |
-| `backport → target` | MR patch chọn lọc | Ghi nguồn bằng `cherry-pick -x`; không gọi đây là đồng bộ toàn bộ branch |
-
-Fast-forward cũng giữ ancestry nếu không rewrite commit. `--no-ff` được dùng trong
-ví dụ để có một merge commit rõ ràng cho release, không phải vì fast-forward làm mất ancestry.
-
-Trước khi áp dụng, kiểm tra merge method, squash policy, quyền protected branch và
-pipeline thực tế của project. Nếu setting bắt buộc rebase/squash làm mất SHA release
-đã kiểm thử, báo xung đột quy trình; không âm thầm dùng phương thức khác.
-
-Các branch `main`, `staging`, `release/*` nên nhận thay đổi qua MR có review và quality
-gate. Không mặc định agent có quyền sửa setting GitLab hay push trực tiếp lên các branch này.
-
-## 5. Luồng chuẩn: feature → staging → release → main → staging
+## 3. Flow tổng thể: feature cung cấp code cho cả staging và release
 
 ```mermaid
 flowchart TD
-    F[Feature từ staging] -->|MR| S[staging]
-    S -->|Cut tại SHA đã chọn| R[release/YYYYMMDD]
-    RF[Release fix từ release] -->|MR| R
-    R -->|MR giữ ancestry| M[main]
-    M -->|MR back-merge giữ ancestry| S
-    M --> T[Release tag và artifact được xác minh]
+    M[main] -->|Tạo branch| F[feature]
+    F -->|MR test, giữ commit feature| S[staging: chỉ nhận merge]
+    M -->|Cut release| R[release/YYYYMMDD]
+    F -->|MR nếu feature được chọn| R
+    R -->|MR giữ ancestry| M
+    M -->|MR đồng bộ| S
 ```
 
-### 5.1 Tích hợp feature
+Không có mũi tên staging đi sang feature/release/main.
 
-Ví dụ: cần thêm chức năng OCR post-check cho release tiếp theo. Production đang chạy
-phiên bản cũ, còn feature này cần được tích hợp và kiểm thử cùng các feature khác.
+Ví dụ: feature OCR post-check được commit thành F. Team merge F vào staging để test.
+Khi chọn phát hành, team merge chính feature branch chứa F vào release từ main.
+Sau release, F là ancestor của cả staging và main.
 
-| Bước | Thao tác | Vì sao? | Kết quả cần thấy |
-| --- | --- | --- | --- |
-| 1 | Fetch và tạo feature từ `origin/staging` | Bắt đầu từ code tích hợp mới nhất | Feature có cùng base với staging lúc tạo |
-| 2 | Sửa code, tạo commit, chạy kiểm tra | Đóng gói thay đổi có thể review | Commit feature và kiểm tra đạt |
-| 3 | Push feature branch khi được phép | GitLab có source branch để review | Remote feature chứa đúng các commit cần gửi |
-| 4 | Mở MR `feature → staging` | Tích hợp feature vào nơi chuẩn bị release | MR không trực tiếp đưa feature lên production |
-| 5 | Review và merge MR | Kết hợp feature với thay đổi tích hợp khác | Staging chứa feature và kiểm tra đạt |
-| 6 | Kết thúc feature branch | Feature sau bắt đầu từ staging mới | Không tái sử dụng lịch sử đã squash |
+Khi main có thêm hotfix H, Git biết F đã có ở staging. Đồng bộ main về staging sẽ xét
+H và các thay đổi source thật sự chưa nhận, thay vì coi toàn bộ F là code mới.
+
+Staging chứa feature chưa được chọn vẫn được giữ khi merge main vào staging, nếu
+không có conflict hoặc quyết định nội dung khác. Feature đó không đi ngược vào release.
+
+## 4. Chính sách giữ commit chung
+
+| MR/thao tác | Chính sách | Lý do |
+| --- | --- | --- |
+| Feature → staging | Merge giữ ancestry; không squash/rebase feature đã dùng chung | Staging phải chứa commit feature thật |
+| Cùng feature → release | Merge giữ ancestry; không tạo bản sao commit bằng cherry-pick | Release nhận cùng commit đã test trên staging |
+| Release → main | Merge giữ ancestry; không squash toàn bộ release | Main nhận lịch sử feature và release fix |
+| Main → staging | Merge giữ ancestry; không squash integration helper | Nối lịch sử production vào staging |
+| Fix/hotfix vào nhiều đích | Dùng chung fix branch khi phù hợp | Tránh copy cùng fix thành nhiều SHA |
+| Backport chọn lọc | Cherry-pick có chủ đích, dùng `-x` | Ngoại lệ cần truy vết nguồn, không thay thế đồng bộ branch |
+
+Fast-forward cũng giữ ancestry nếu giữ nguyên commit. `--no-ff` tạo merge commit rõ
+ràng, không phải điều kiện duy nhất để ancestry đúng.
+
+Trong flow này feature được sử dụng trên cả staging và release, nên lời khuyên “feature
+có thể squash tùy ý” không áp dụng. Nếu muốn gộp commit, thực hiện **trước khi feature
+được merge lần đầu**, rồi dùng cùng commit đã gộp trên cả hai đích.
+
+Sau khi feature đã được merge vào staging, giữ lịch sử ổn định. Fix thêm bằng commit
+mới; không rebase/force-push để thay SHA đã được chia sẻ.
+
+Feature branch không được nhận merge staging. Nếu cần cập nhật nền production, có
+thể merge main vào feature theo quy trình team; phải kiểm tra phạm vi trước khi release.
+
+Nếu feature B phụ thuộc feature A, tạo B từ main có A hoặc từ feature A được xác định
+rõ; không lấy staging làm base để vô tình mang theo tất cả feature khác. Release B
+phải có A và được kiểm thử với tập dependency đầy đủ.
+
+Kiểm tra merge method, squash policy và quyền protected branch thực tế trên GitLab.
+Nếu setting bắt buộc tạo SHA khác ở mỗi đích, báo xung đột với mục tiêu giữ commit chung.
+
+## 5. Flow feature: phát triển → test staging → chọn vào release
+
+Ví dụ cần thêm OCR post-check, production chưa có tính năng này.
+
+### 5.1 Tạo feature từ main
 
 ```bash
 git fetch origin
-git switch -c feature/huynv106/BDSKD-XXXX origin/staging
+git switch -c feature/huynv106/BDSKD-XXXX origin/main
 ```
 
-Tại bước 2, stage đúng file đã review và commit với nội dung mô tả feature. Quality
-gate cho code change là `./mvnw -B verify`. Khi đã được phép push, ví dụ:
+Sửa code, stage đúng file đã review và commit. Với code change, chạy quality gate
+của repository: `./mvnw -B verify`.
+
+Branch tạo từ main giúp feature không chứa các feature chưa release đang có ở staging.
+
+### 5.2 Đưa feature vào staging để test
+
+Khi được phép xuất bản:
 
 ```bash
 git push -u origin feature/huynv106/BDSKD-XXXX
 ```
 
-Trên GitLab chọn source `feature/huynv106/BDSKD-XXXX`, target `staging`. Không chọn
-target `main` cho feature đang chờ một đợt release thông thường.
+Mở MR:
 
-Nếu feature được squash, không tái sử dụng lịch sử feature cũ cho MR tiếp theo; tạo
-branch mới từ `origin/staging`. Squash ở đây có thể phù hợp vì feature là branch ngắn hạn.
+```text
+source: feature/huynv106/BDSKD-XXXX
+target: staging
+method: merge giữ ancestry, không squash
+```
 
-### 5.2 Cắt release tại một SHA cụ thể
+Ghi SHA feature đã review. QA test hành vi trên staging sau merge.
+**Không xóa feature branch lúc này** nếu release chưa nhận nó.
 
-Ví dụ: staging đã có feature OCR post-check và được chọn để release ngày 01/10.
-Trong lúc QA kiểm thử, developer cần tiếp tục làm feature mới cho ngày 15/10. Vì vậy
-tạo một release branch để giữ riêng phạm vi của ngày 01/10.
+### 5.3 Sửa feature sau khi QA phát hiện lỗi
 
-Release owner xác định phạm vi, SHA staging, phiên bản dự kiến và kết quả kiểm thử.
-Ví dụ tên branch dưới đây là minh họa; phải kiểm tra branch chưa tồn tại trước khi tạo.
+Thêm commit fix vào chính feature branch từ main, rồi merge phần mới vào staging.
+Không chỉ sửa trên staging: commit chỉ tồn tại ở staging không có đường phát hành
+sang main theo rule của team.
+
+Nếu conflict chỉ tồn tại do kết hợp nhiều feature trên staging, resolve ở staging
+để test tích hợp. Không đưa toàn bộ resolution staging vào feature/release; đánh giá
+lại conflict trên release và kiểm thử release candidate riêng.
+
+### 5.4 Chọn feature vào release
+
+Khi được duyệt, mở MR từ **cùng feature branch** vào release:
+
+```text
+source: feature/huynv106/BDSKD-XXXX
+target: release/20261001
+method: merge giữ ancestry, không squash
+```
+
+Ghi SHA source ở cả hai MR. Nếu feature tiến thêm sau lần QA đầu tiên, QA phải xác
+minh SHA mới; “cùng branch name” không chứng minh “cùng code đã kiểm thử”.
+
+### 5.5 Điều kiện kết thúc feature
+
+Feature hoàn tất khi release/main và staging đã nhận các commit cần thiết, kiểm tra
+đạt và các follow-up được xử lý. Có thể xóa branch sau khi các commit đã nằm trong
+lịch sử đích và MR/SHA được ghi nhận.
+
+## 6. Flow release: chọn feature từ main, phát hành, đồng bộ staging
+
+### 6.1 Chọn base và danh sách feature
+
+Release owner ghi:
+
+- Main base SHA được chọn.
+- Danh sách feature/fix SHA được phát hành.
+- Dependency giữa các feature.
+- Phiên bản dự kiến và kế hoạch kiểm thử.
+
+Staging là nơi quan sát kết quả test tích hợp, không phải nguồn lịch sử cho release.
+
+### 6.2 Tạo release từ main
 
 ```bash
 git fetch origin
-git rev-parse origin/staging
-git switch -c release/20261001 origin/staging
+git switch -c release/20261001 origin/main
 git rev-parse HEAD
 ```
 
-Khi được phép xuất bản release branch:
+Ghi SHA này thành `release_base_sha`. Khi được phép:
 
 ```bash
 git push -u origin release/20261001
 ```
 
-Hai SHA đọc ở thời điểm cut phải trùng nhau. Ghi SHA này là `cut_sha` trong release MR.
-Nếu `staging` tiếp tục thay đổi sau đó, so ancestry với `cut_sha`, không yêu cầu head
-mới nhất của `staging` phải nằm trong release.
+### 6.3 Merge các feature được chọn
+
+Mở MR từng feature vào release, giữ nguyên lịch sử. Ví dụ staging có F1 và F2 nhưng
+release chỉ chọn F1:
 
 ```text
-A---B                         main
-     \
-      C---D---S---N1---N2      staging
-              \
-               R1             release/20261001
+feature/F1 → staging       đã test
+feature/F2 → staging       đã test
+
+feature/F1 → release       được chọn
+feature/F2                 chưa phát hành
 ```
 
-`S` là điểm cut. `N1`, `N2` thuộc release sau. `R1` là fix của release hiện tại.
+Không merge staging vào release để nhận F1. Không tạo release từ staging rồi revert
+F2: cách đó vẫn đưa ancestry staging vào đường phát hành và làm scope khó kiểm soát.
 
-Tạo release không tự thêm commit, không tự deploy và không làm staging ngừng phát
-triển. Nó tạo một nhánh có thể tiến riêng để QA kiểm thử một phạm vi ổn định.
+### 6.4 Freeze và UAT đúng release candidate
 
-### 5.3 Đóng băng và sửa lỗi release
+Sau khi chọn đủ feature, chốt scope. Mỗi fix làm candidate SHA thay đổi và phải được
+kiểm thử tương ứng.
 
-Ví dụ: QA phát hiện OCR post-check trả sai một trường trong release ngày 01/10.
-Staging đã nhận thêm feature ngày 15/10, nên lấy staging làm base cho fix có thể kéo
-theo code chưa nằm trong phạm vi UAT.
+Staging có F1 + F2 không chứng minh release chỉ có F1 hoạt động đúng. QA phải kiểm thử
+release candidate thực tế: các feature có thể phụ thuộc hoặc tương tác khác nhau.
 
-Tạo fix branch từ release, rồi MR trở lại release:
+### 6.5 Merge release vào main
 
-```bash
-git fetch origin
-git switch -c fix/huynv106/BDSKD-YYYY-release origin/release/20261001
-```
+Mở MR `release/20261001 → main`, không squash/rebase các commit nguồn đã test.
+Ghi `release_sha`, `main_before_sha` và `main_after_sha`.
 
-Sau khi sửa, commit và kiểm tra, push fix branch khi được phép rồi mở:
-
-```text
-source: fix/huynv106/BDSKD-YYYY-release
-target: release/20261001
-```
-
-Sau merge, QA kiểm thử release candidate mới. Lỗi được sửa trên release ngày 01/10;
-feature ngày 15/10 trên staging vẫn ở ngoài release. Fix sẽ về staging qua back-merge
-sau release, hoặc qua MR merge cùng fix branch sớm hơn nếu staging cần fix ngay.
-
-Release chỉ nhận bug fix, security fix hoặc thay đổi cấu hình thuộc phạm vi đã duyệt.
-Mỗi thay đổi sau UAT làm thay đổi candidate SHA; phải chạy lại các kiểm tra bị ảnh hưởng
-và ghi rõ SHA candidate cuối cùng. Không merge lại toàn bộ `staging` để lấy một fix.
-
-### 5.4 Merge release vào main
-
-Đây là bước duyệt code của đợt release vào lịch sử production. Nó khác với deploy:
-merge MR thành công chưa chứng minh production đã chạy artifact mới.
-
-| Bước | Thao tác | Mục tiêu |
-| --- | --- | --- |
-| 1 | QA/release owner duyệt release candidate SHA | Xác định chính xác code được chấp nhận |
-| 2 | Mở MR `release/20261001 → main` | Review phần thay đổi production |
-| 3 | Merge giữ ancestry, không squash | Main nhận đúng lịch sử feature và release fix |
-| 4 | Kiểm tra kết quả merge và pipeline | Phát hiện khác biệt do merge/resolve conflict |
-| 5 | Tag, build/promote artifact, deploy theo quy trình được cấp quyền | Đưa đúng phiên bản đã xác minh vào production |
-| 6 | Ghi kết quả và thực hiện back-merge | Các branch tiếp tục phát triển không thiếu release fix |
-
-Tạo MR `release/20261001 → main`, giữ ancestry và tắt squash cho MR này.
-Trước merge, ghi nhận `release_sha` và `main_before_sha`.
-
-Sau merge, fetch và ghi `main_after_sha`; kiểm tra trên các SHA đã ghi nhận:
+Với các biến đã gán SHA thật:
 
 ```bash
 git merge-base --is-ancestor "$release_sha" "$main_after_sha"
@@ -287,81 +288,134 @@ git diff --stat "$main_before_sha" "$main_after_sha"
 git diff "$release_sha" "$main_after_sha"
 ```
 
-Các biến trong ví dụ phải được gán SHA thật trước khi chạy. Không dùng giá trị rỗng.
-Exit code `0` của ancestry check xác nhận release SHA thật đã đi vào lịch sử `main`.
-Exit code `1` là không có quan hệ; exit code khác phải xử lý như lỗi kiểm tra.
+Ancestry check phải trả exit code 0. Exit code 1 nghĩa là không có quan hệ; các lỗi
+khác phải được xử lý riêng. Nếu tree main sau merge khác candidate release, kiểm
+thử kết quả cuối cùng trước khi tuyên bố đạt kiểm tra release.
 
-Diff giữa candidate release và main sau merge giúp phát hiện thay đổi do conflict
-resolution hoặc thay đổi riêng trên `main`. Nếu hai tree khác nhau, không tuyên bố
-candidate release đã kiểm thử hoàn toàn tương đương kết quả trên `main`.
+Tag, build/promote artifact và deploy là các bước riêng theo quyền được cấp.
+Ghi SHA, tag, artifact digest, pipeline và deployment status. Không suy rằng đã deploy
+chỉ vì MR merge thành công.
 
-Phải kiểm thử đúng kết quả cuối cùng hoặc artifact được build từ kết quả đó trước deploy.
-Tag trỏ vào SHA release cuối cùng đã duyệt, không chọn head hiện tại nếu branch đã tiến thêm.
-Ghi tag, commit SHA, artifact digest, pipeline và deployment status để truy vết.
+### 6.6 Merge main về staging
 
-### 5.5 Back-merge main vào staging
+Mở MR `main → staging`, giữ ancestry. Nếu cần resolve trên helper, làm theo mục 10.
 
-Sau UAT, main đã nhận release fix, nhưng staging có thể vẫn thiếu fix đó. Back-merge
-giúp feature của release sau được phát triển trên nền code đã sửa lỗi production.
+Staging đã có các commit feature được dùng chung nên Git không cần xem chúng là những
+commit phát triển độc lập. Release fix hoặc thay đổi riêng hợp lệ trên main vẫn cần nhận.
 
-Sau khi release vào `main`, tạo MR `main → staging`, hoặc chuẩn bị integration branch
-từ `staging` nếu cần resolve conflict trước khi review. Merge phải giữ ancestry.
+### 6.7 Theo dõi nội dung qua một release
 
-Luồng này mang về cả release fix và thay đổi phát sinh trong merge commit trên `main`.
-Nó cũng làm head production đã duyệt trở thành ancestor của `staging`.
+P0 là production ban đầu, F1 là feature được chọn, F2 là feature chưa phát hành, R là
+fix QA trên release. Bảng minh họa giả định không có thay đổi production riêng khác.
 
-Đối với integration branch, graph sau merge có dạng:
+| Thời điểm | Main | Staging | Release |
+| --- | --- | --- | --- |
+| Ban đầu | P0 | P0 | Chưa tạo |
+| Feature được test | P0 | P0 + F1 + F2 | Chưa tạo |
+| Cut từ main | P0 | P0 + F1 + F2 | P0 |
+| Merge F1 vào release | P0 | P0 + F1 + F2 | P0 + F1 |
+| QA fix release | P0 | P0 + F1 + F2 | P0 + F1 + R |
+| Release vào main | P0 + F1 + R | P0 + F1 + F2 | P0 + F1 + R |
+| Main về staging | P0 + F1 + R | P0 + F1 + F2 + R | P0 + F1 + R |
 
-```text
-A---B----------------M        main
-     \              / \
-      C---D---S---R1    \
-              \         \
-               N1---N2---I   integration branch → staging
+Ở bước cuối, F1 là cùng commit trên cả hai lịch sử, F2 vẫn chỉ ở staging, R được đưa
+về staging. Đây là cách đáp ứng rule staging chỉ nhận merge mà không dựng lại cùng
+feature thành nhiều commit độc lập.
+
+## 7. Flow sửa lỗi lúc UAT
+
+Ví dụ QA phát hiện OCR post-check sai một trường trong release.
+
+1. Tạo fix branch từ release candidate.
+2. Sửa, commit, chạy kiểm tra.
+3. MR fix vào release, giữ ancestry.
+4. QA kiểm thử candidate mới.
+5. Nếu staging cần fix ngay, merge cùng fix branch vào staging sau khi review scope.
+6. Nếu chưa cần ngay, staging nhận fix qua `release → main → staging`.
+
+```bash
+git fetch origin
+git switch -c fix/huynv106/BDSKD-YYYY-release origin/release/20261001
 ```
 
-`M` merge release vào `main`; `I` merge `M` vào lịch sử chứa `N1`, `N2`.
-Kết quả phải giữ feature mới của staging và nhận thay đổi production thích hợp.
+Một fix branch từ release có cả ancestry release. Trước khi merge nó vào staging,
+xác minh các commit đi kèm đều phù hợp. Nếu không, backport fix chọn lọc và ghi rõ ngoại lệ.
 
-Điều kiện hoàn tất: `main_after_sha` là ancestor của kết quả trên `staging`, không còn
-conflict và các kiểm tra nội dung đều đạt. Ancestry check một mình chưa đủ.
+Nếu sau lần đưa fix vào release còn thêm commit, ghi lại candidate SHA và kiểm thử
+lại. Không bỏ sót fix bằng cách chỉ sửa trực tiếp một file trên staging.
 
-Ví dụ staging đã có feature tìm kiếm mới; main chưa có feature này nhưng có fix OCR.
-Merge main vào staging phải giữ tìm kiếm và nhận fix OCR. Không thay toàn bộ cây file
-của staging bằng snapshot main, vì thao tác đó sẽ làm mất feature đang phát triển.
+## 8. Flow hotfix production
 
-### 5.6 Theo dõi một release từ đầu đến cuối
+Ví dụ production lỗi liveness, staging có feature chưa duyệt.
 
-Bảng dưới đây mô tả nội dung branch, không thay thế commit graph. `P0` là phiên bản
-production ban đầu, `F` là feature release này, `R` là release fix và `N` là feature release sau.
+### 8.1 Chọn base đúng production
 
-| Thời điểm | Main | Staging | Release | Đang làm gì? |
-| --- | --- | --- | --- | --- |
-| Ban đầu | `P0` | `P0` | Chưa tạo | Hai branch có nền chung |
-| Feature được tích hợp | `P0` | `P0 + F` | Chưa tạo | MR feature vào staging |
-| Cut release | `P0` | `P0 + F` | `P0 + F` | Tạo release trực tiếp từ staging |
-| Staging nhận feature sau | `P0` | `P0 + F + N` | `P0 + F` | Freeze giúp release không tự nhận N |
-| QA phát hiện lỗi và fix | `P0` | `P0 + F + N` | `P0 + F + R` | MR release fix vào release |
-| Release merge vào main | `P0 + F + R` | `P0 + F + N` | `P0 + F + R` | Main chứa F/R; N chưa lên production |
-| Main back-merge staging | `P0 + F + R` | `P0 + F + N + R` | `P0 + F + R` | Staging giữ N và nhận R |
+Xác minh phiên bản đang chạy. Nếu origin/main chính là phiên bản đó:
 
-Giả sử không có thay đổi production riêng hoặc conflict resolution làm đổi thêm hành
-vi, MR back-merge cuối chỉ cần đưa nội dung R vào staging; F đã có cùng ancestry.
-Khi đó diff MR không phải hiển thị lại toàn bộ F như một thay đổi mới.
+```bash
+git fetch origin
+git switch -c hotfix/huynv106/BDSKD-ZZZZ origin/main
+```
 
-Nếu không có R, back-merge có thể không đổi nội dung file nhưng vẫn nối lịch sử main
-với staging. Nếu main còn thay đổi khác, phải review chúng cùng R.
+Nếu main đã chứa release chưa deploy, cần chọn production SHA và đường phát hành
+phù hợp; không tự phát hành code chưa duyệt chỉ để lấy một hotfix.
 
-Đợt release sau được cut từ staging mới và chứa `P0 + F + N + R`. Team không phải nhớ
-cherry-pick R lần nữa; nó đã nằm trong lịch sử chung.
+### 8.2 Đưa fix lên production và về staging
 
-## 6. Quy trình merge thử và resolve conflict
+1. Sửa và kiểm thử trên hotfix.
+2. MR `hotfix → main`, giữ ancestry.
+3. Xác minh kết quả, tag/artifact/deploy theo scope được cấp.
+4. MR `main → staging`, giữ ancestry.
+5. Release đang UAT nhận hotfix nếu cần và được kiểm thử lại.
 
-Nếu worktree hiện tại có thay đổi của người dùng, dùng worktree riêng. Không tự stash,
-reset hay ghi đè thay đổi đang tồn tại. Sau khi fetch, ghim SHA source/target cho lần kiểm tra.
+| Thời điểm | Main | Staging |
+| --- | --- | --- |
+| Trước fix | P1 | P1 + N |
+| Hotfix vào main | P1 + H | P1 + N |
+| Main về staging | P1 + H | P1 + N + H |
 
-Ví dụ dưới đây chuẩn bị merge cục bộ; `git merge` có thể tạo merge commit. Chỉ thực
-hiện khi tác vụ đã cho phép chuẩn bị thay đổi/commit cục bộ tương ứng.
+N chưa phát hành, H là hotfix. Main không nhận N vì staging không được dùng làm source.
+
+MR main về staging chỉ nhỏ theo delta H khi lịch sử đã có nền chung phù hợp và main
+không có thêm thay đổi khác. Rule hướng merge một mình không bảo đảm diff nhỏ.
+
+## 9. Flow backport: chỉ nhận commit sửa pom.xml
+
+Nếu main có nhiều khác biệt nhưng yêu cầu staging chỉ nhận dependency fix, tạo
+backport branch từ staging:
+
+```bash
+git fetch origin
+git switch -c backport/huynv106/security-dependencies origin/staging
+git show --stat --oneline 6c92138
+git cherry-pick -x 6c92138
+git diff --stat origin/staging HEAD
+git diff origin/staging HEAD
+./mvnw -B verify
+```
+
+Trước thao tác phải kiểm tra prerequisite và patch đã tồn tại chưa.
+Nếu cherry-pick conflict hoặc empty, giải thích và xử lý trước khi tiếp tục.
+
+Khi đạt kiểm tra, xuất bản theo quyền được cấp và mở:
+
+```text
+backport/huynv106/security-dependencies → staging
+```
+
+Nghiệm thu scope: chỉ pom.xml thay đổi. `-x` ghi SHA nguồn vào commit message.
+
+Backport helper từ staging chỉ quay về staging, không đưa vào main/release.
+Backport không sửa ancestry main/staging. Đây là ngoại lệ lấy một fix, không phải cách
+đồng bộ hàng loạt feature giữa các branch.
+
+## 10. Chuẩn bị merge main về staging khi có conflict
+
+Nếu worktree có thay đổi của người dùng, dùng worktree riêng. Ghim SHA source/target.
+Branch này chỉ hỗ trợ target staging, không được dùng làm source release.
+
+Các command có thể tạo merge commit; chỉ chạy khi tác vụ đã cho phép thao tác local
+tương ứng. Dừng và kiểm tra khi một command lỗi.
 
 ```bash
 git fetch origin
@@ -375,7 +429,7 @@ cd "$integration_worktree"
 git merge --no-ff "$source_sha"
 ```
 
-Nếu merge trả lỗi/conflict, dừng chuỗi thao tác và kiểm tra trước khi chạy lệnh tiếp.
+Nếu conflict:
 
 ```bash
 git status --short
@@ -383,16 +437,15 @@ git diff --name-only --diff-filter=U
 git diff --cc
 ```
 
-Với mỗi conflict, giải thích thay đổi phía source, thay đổi phía target và hành vi cuối
-cùng cần giữ. Trong lệnh trên, `ours` là staging/integration branch và `theirs` là main;
-không áp dụng cách hiểu này cho rebase vì ngữ cảnh có thể khác.
+Trong merge này, ours là staging/helper, theirs là main. Không áp dụng cách gọi đó
+máy móc cho rebase. Resolve dựa trên hành vi cần giữ, không chọn toàn bộ một phía để
+giảm số file.
 
-Không chọn toàn bộ `ours`/`theirs` chỉ để giảm số file. Không xóa migration đã áp dụng,
-khôi phục endpoint đã bị loại bỏ vì security hoặc loại feature staging mà không có
-quyết định nội dung rõ ràng. Nếu phải đổi kiến trúc/business contract, đọc các tài liệu
-được `AGENTS.md` yêu cầu trước khi thực hiện.
+Ví dụ staging có feature tìm kiếm chưa release, main có fix OCR: kết quả phải giữ
+tìm kiếm và nhận fix OCR. Nếu main cố ý xóa diagnostic API vì security, quyết định
+giữ/xóa API cần review riêng; không gọi đó là nhiễu lịch sử.
 
-Sau khi resolve, chỉ stage các file đã review và hoàn tất merge commit. Kiểm tra:
+Stage đúng file đã review và hoàn tất merge commit. Kiểm tra:
 
 ```bash
 git diff --name-only --diff-filter=U
@@ -404,130 +457,61 @@ git merge-base --is-ancestor "$target_sha" HEAD
 ./mvnw -B verify
 ```
 
-`diff-filter=U` phải không có output. Hai ancestry check phải đạt. Nội dung diff phải
-khớp scope đã duyệt. Quality gate phải thành công; không bỏ qua check lỗi.
+Không còn unmerged paths; ancestry và quality gate phải đạt. Nội dung delta phải đúng
+scope. Kiểm tra remote heads trước khi xuất bản/merge MR; head tiến thêm thì đánh giá
+lại delta và kiểm tra bị ảnh hưởng.
 
-Kiểm tra lại remote heads trước khi xuất bản/merge MR. Nếu source/target đã thay đổi,
-đánh giá lại delta và chạy lại các kiểm tra bị ảnh hưởng. Không dùng kết quả kiểm thử
-SHA cũ để kết luận về SHA mới.
+Mở MR `integration helper → staging` khi được phép; không squash MR này.
+Sau merge, main SHA đã ghim phải là ancestor của staging result SHA.
 
-Khi được phép xuất bản, push integration branch và tạo MR `integration → staging`
-với phương thức giữ ancestry. Squash MR này sẽ làm mất liên kết ancestry vừa chuẩn bị.
+## 11. Chẩn đoán và xử lý lịch sử hiện tại
 
-## 7. Biến thể: release → main và release → staging
+### 11.1 Bằng chứng trên refs kiểm tra ngày 01/10/2026
 
-Team có thể merge cùng release branch vào cả hai đích:
+| Thuộc tính | Giá trị |
+| --- | --- |
+| Origin/main | `2bd4bb079c5a1c05961126fec9eb8b1c1e7b13ec` |
+| Origin/staging | `4e31e5ffccb85dfc7b5eb0a825cf9a79ae907608` |
+| Merge-base | `951eb5b12f4ac9891bbff66919072843b123bb56` |
+| Commit riêng theo ancestry | Staging: 136; main: 112 |
+| Three-dot diff | 215 file, +11.076 / -4.264 dòng |
+| Snapshot diff | 16 file, +21 / -2.039 dòng |
+| Dependency fix | `6c92138b9287fc247f4a8ff853516a4c93aebe20`: pom.xml, +16 dòng |
 
-```text
-release/YYYYMMDD → main
-release/YYYYMMDD → staging
-```
+Đây là snapshot chẩn đoán trên refs đã kiểm tra, không phải dữ liệu bất biến.
+Ví dụ patch tương đương: `de60750` trên staging và `52554f1` trên main sửa batch delete
+media dưới SHA khác nhau.
 
-Hai lần merge phải giữ nguyên release SHA. Release fix khi đó là ancestor của cả hai
-branch, nên không phải cherry-pick fix hai lần.
+Main còn khác staging ở static test UI, OpenAPI BFF, result/diagnostic API và một số
+test. Vì vậy không thể kết luận đồng bộ toàn bộ main chỉ cần sửa pom.xml.
 
-Tuy nhiên, merge commit trên `main` có thể chứa conflict resolution hoặc thay đổi
-production riêng mà release branch không có. Merge release về staging không tự mang
-những thay đổi này về, và cũng không làm chính merge commit trên `main` trở thành
-ancestor của staging.
+### 11.2 Một lần reconcile theo đúng rule
 
-Do đó phải kiểm tra diff `release_sha → main_after_sha`. Nếu có thay đổi cần đưa về,
-thực hiện thêm back-merge `main → staging` hoặc backport có ghi nhận. Luồng chuẩn ở
-mục 5 chọn back-merge `main → staging` sau release để bao gồm đầy đủ kết quả trên main.
+Rule cấm staging đi ra branch khác vẫn cho phép main đi vào staging:
 
-Khi `main` chỉ có merge commit với tree giống release, MR back-merge có thể không có
-delta nội dung. Nếu công cụ không cho tạo MR chỉ khác ancestry, dùng integration branch
-theo quy trình được team duyệt; không thêm file vô nghĩa để ép công cụ mở MR.
+1. Ghim main/staging SHA và chẩn đoán diff.
+2. Lập quyết định cho từng khác biệt: nhận main, giữ staging, kết hợp hoặc cần review.
+3. Tạo helper phía target staging và merge main vào helper theo mục 10.
+4. Resolve conflict theo quyết định; kiểm tra delta, ancestry và quality gate.
+5. MR helper về staging, giữ ancestry.
+6. Các feature/release mới đi từ main theo mục 5–6, không nhận lịch sử staging.
 
-## 8. Hotfix production
+Main không bị thay đổi trong bước reconcile này. Main trở thành ancestor của kết quả
+staging, giúp merge-base tiến lên cho các lần đồng bộ tiếp theo.
 
-Ví dụ: sau deploy, production gặp lỗi liveness nghiêm trọng. Staging đang chứa feature
-chưa được duyệt. Hotfix cần sửa phiên bản đang chạy, không vô tình phát hành feature mới.
+Nếu team chủ động giữ nội dung staging khác main, phải ghi rõ trong MR. Ancestry vẫn
+đánh dấu main đã được nhận; những patch source bị loại khi resolve không tự xuất hiện
+như thay đổi mới ở lần merge sau.
 
-### 8.1 Chọn đúng base
+Feature cũ tạo từ staging không được đưa thẳng vào release mới: nó có thể mang theo
+các feature khác qua ancestry. Với feature chưa phát hành, kiểm tra commit đã có trên
+main chưa, dependency và scope; nếu cần, dựng branch sạch từ main và backport chọn lọc
+có ghi nguồn. Staging nhận lịch sử main sau release và reconcile các khác biệt đó.
 
-Xác định tag/SHA đang chạy production. Nếu head `main` đúng phiên bản đó, tạo hotfix từ
-`origin/main`. Nếu main đã chứa release chưa deploy, phải xác định base và branch đích
-thích hợp; không tự đưa release chưa duyệt vào production chỉ để áp dụng hotfix.
+Không dùng `git merge -s ours`, restore toàn bộ staging rồi chỉ copy pom.xml, reset
+hoặc force-push branch lâu dài như cách mặc định làm đẹp diff.
 
-```bash
-git fetch origin
-git switch -c hotfix/huynv106/BDSKD-ZZZZ origin/main
-```
-
-### 8.2 Merge và đồng bộ
-
-Luồng ưu tiên khi main là base thích hợp:
-
-1. MR `hotfix → main`, giữ ancestry, chạy kiểm tra kết quả merge.
-2. Release/tag/deploy theo phạm vi đã được cấp quyền.
-3. MR `main → staging`, giữ ancestry và review delta.
-4. Nếu có release đang UAT, đưa fix vào release đó và kiểm thử candidate mới.
-
-Có thể merge cùng hotfix branch vào release đang UAT khi ancestry source không kéo
-theo thay đổi ngoài phạm vi. Nếu không phù hợp, backport chọn lọc có ghi nguồn là hợp lệ.
-Không merge toàn bộ staging vào release đóng băng để nhận hotfix.
-
-Việc sửa production chưa hoàn tất về mặt đồng bộ cho đến khi các branch liên quan
-nhận fix hoặc có quyết định không áp dụng rõ ràng.
-
-### 8.3 Theo dõi hotfix bằng nội dung branch
-
-| Thời điểm | Main | Staging | Hành động |
-| --- | --- | --- | --- |
-| Trước lỗi | `P1` | `P1 + N` | N là feature chưa lên production |
-| Hotfix hoàn tất | `P1` | `P1 + N` | Hotfix branch từ P1 có thêm H |
-| Merge hotfix vào main | `P1 + H` | `P1 + N` | Production nhận H sau deploy; N chưa phát hành |
-| Main back-merge staging | `P1 + H` | `P1 + N + H` | Staging giữ N và nhận H |
-
-Trong ví dụ, H là fix liveness. MR `main → staging` chỉ có delta H nếu P1 đã là tổ
-tiên chung và main không có thêm thay đổi nội dung khác. Nếu merge-base cũ như repository
-hiện tại, phải xử lý reconcile hoặc backport có chủ đích trước; không hứa MR sẽ nhỏ.
-
-Nếu release đang UAT được cut trước H, release cũng cần nhận H. Nếu release được cut
-sau khi staging đã nhận H, H đã nằm trong release ancestry; kiểm tra trước để tránh áp dụng lại.
-
-## 9. Backport chọn lọc: chỉ nhận một patch
-
-Ví dụ đúng với nhu cầu hiện tại: main có fix dependency và đã xóa một số diagnostic
-API/static UI. Staging cần fix dependency trong `pom.xml` nhưng chưa có quyết định nhận
-các thay đổi còn lại. Branch backport được tạo từ staging và chỉ nhận commit fix dependency.
-
-Nếu yêu cầu là nhận một fix cụ thể, tạo branch từ target và cherry-pick commit fix:
-
-```bash
-git fetch origin
-git switch -c backport/huynv106/security-dependencies origin/staging
-git show --stat --oneline 6c92138
-git cherry-pick -x 6c92138
-git diff --stat origin/staging HEAD
-git diff origin/staging HEAD
-./mvnw -B verify
-```
-
-`-x` ghi SHA gốc vào commit message để truy vết. Trước khi cherry-pick, kiểm tra
-prerequisite, patch đã tồn tại chưa và liệu commit có nhiều thay đổi hơn yêu cầu không.
-Nếu cherry-pick conflict/empty, xử lý và giải thích nguyên nhân; không tiếp tục như thành công.
-
-Backport là ngoại lệ có chủ đích. Nó không thiết lập ancestry giữa main và staging.
-Không dùng hàng loạt backport để thay cho cơ chế release merge thông thường.
-
-Nếu chỉ nhận file `pom.xml`, nghiệm thu phải xác nhận diff MR chỉ có file đó. Một commit
-chỉ sửa một file vẫn cần kiểm tra compatibility, dependency resolution và build.
-
-Các bước hoàn tất trên GitLab:
-
-1. Khi kiểm tra đạt và được phép push, xuất bản `backport/huynv106/security-dependencies`.
-2. Mở MR từ branch backport vào `staging`, không dùng `main` làm source của MR này.
-3. Reviewer kiểm tra commit gốc, delta chỉ `pom.xml` và kết quả quality gate.
-4. Merge MR; staging nhận patch dependency nhưng chưa được xem là đã merge toàn bộ main.
-
-Luồng này giải quyết nhu cầu một patch. MR reconcile ở mục 11.2 giải quyết lịch sử
-hai branch; đó là hai tác vụ có tiêu chí nghiệm thu khác nhau.
-
-## 10. Chẩn đoán MR nhiều file
-
-Các lệnh sau phục vụ chẩn đoán, không sửa file:
+### 11.3 Các lệnh chẩn đoán
 
 ```bash
 git fetch origin
@@ -541,179 +525,106 @@ git diff --stat origin/staging origin/main
 git diff --name-status origin/staging origin/main
 ```
 
-Diễn giải:
+Commit count bao gồm commit và merge commit chỉ reachable ở từng phía, không phải
+số thay đổi nghiệp vụ. Dấu `=` của cherry-mark là patch tương đương, không thiết lập
+ancestry hay chứng minh runtime tương đương.
 
-- Commit count là số commit reachable chỉ ở mỗi phía theo ancestry, gồm cả merge commit.
-  Nó không phải số thay đổi nghiệp vụ độc lập hay số file cần sửa.
-- `--cherry-mark` đánh dấu `=` cho patch tương đương; không làm các commit đó trở thành
-  ancestor và không chứng minh hành vi runtime tương đương.
-- MR diff lớn nhưng snapshot diff nhỏ là dấu hiệu cần kiểm tra cherry-pick, squash hoặc
-  lịch sử rewrite; không tự kết luận toàn bộ MR diff sẽ được áp dụng lần nữa.
-- Nếu có nhiều merge-base, lịch sử có thể phức tạp hơn sơ đồ một base; kiểm tra merge
-  thật trong worktree thay vì chọn tùy ý một base và khẳng định kết quả.
-- Merge thử và delta so với target ban đầu là bằng chứng trực tiếp về nội dung cuối cùng.
+Nếu có nhiều merge-base, kiểm tra merge thật trong worktree thay vì chọn tùy ý một base.
+Git cũ có thể không hỗ trợ `merge-tree --write-tree`; kiểm tra phiên bản trước khi dùng.
 
-Git cũ có thể không hỗ trợ `git merge-tree --write-tree`. Kiểm tra phiên bản trước
-khi dùng; không coi lỗi thiếu option là merge conflict hoặc merge thành công.
+## 12. Hợp đồng cho AI agent
 
-## 11. Hiện trạng repository và cách chuyển đổi
-
-### 11.1 Bằng chứng trên refs đã kiểm tra ngày 01/10/2026
-
-| Thuộc tính | Giá trị |
-| --- | --- |
-| `origin/main` | `2bd4bb079c5a1c05961126fec9eb8b1c1e7b13ec` |
-| `origin/staging` | `4e31e5ffccb85dfc7b5eb0a825cf9a79ae907608` |
-| Merge-base | `951eb5b12f4ac9891bbff66919072843b123bb56` |
-| Commit riêng theo ancestry | staging: 136; main: 112 |
-| Three-dot diff | 215 file, +11.076 / -4.264 dòng |
-| Snapshot diff | 16 file, +21 / -2.039 dòng |
-| Commit dependency fix | `6c92138b9287fc247f4a8ff853516a4c93aebe20`: chỉ `pom.xml`, +16 dòng |
-
-Đây là snapshot chẩn đoán trên remote-tracking refs, không phải số liệu cố định.
-Phải fetch và tính lại trước khi thực hiện thay đổi ở thời điểm khác.
-
-Ví dụ patch tương đương nhưng SHA khác: `de60750` trên staging và `52554f1` trên main
-cùng thay đổi batch private media deletion. Các thay đổi đi qua release dưới SHA khác
-làm merge-base không tiến lên như khi merge lịch sử gốc.
-
-Khác biệt cuối cùng vẫn nhiều hơn `pom.xml`: main còn loại static test UI, OpenAPI BFF,
-một số result/diagnostic API và thay đổi test tương ứng. Đây là khác biệt nội dung cần
-quyết định, không thể xóa bỏ bằng cách gọi chúng là diff nhiễu.
-
-### 11.2 Chuyển đổi theo hai mục tiêu riêng
-
-Nếu chỉ cần dependency fix ngay: backport `6c92138` theo mục 9 và nghiệm thu scope một file.
-
-Để áp dụng GitFlow cho các release sau: thực hiện một MR reconcile lịch sử riêng:
-
-1. Ghim SHA main/staging, lưu cả MR diff và snapshot diff.
-2. Lập bảng cho từng khác biệt: nhận từ main, giữ staging, kết hợp, hoặc cần quyết định.
-3. Review security/API/migration khác biệt; không suy đoán ý định chỉ từ số dòng.
-4. Merge main vào integration branch từ staging và resolve theo bảng đã duyệt.
-5. Kiểm tra delta cuối cùng, ancestry và quality gate.
-6. Merge integration branch vào staging với ancestry được giữ.
-7. Các release tiếp theo cắt trực tiếp từ staging và theo mục 5.
-
-Nếu team cố ý giữ một số nội dung staging khác main, merge commit vẫn ghi nhận main
-đã đi vào lịch sử. Những thay đổi source đã bị loại khi resolve sẽ không tự được đưa
-ra như thay đổi mới ở lần merge sau; muốn nhận chúng cần một thao tác nội dung mới.
-Phải ghi rõ quyết định này trong MR reconcile.
-
-Không dùng `git merge -s ours`, restore toàn bộ target rồi chỉ copy `pom.xml`, force-push
-hay reset branch lâu dài như cách mặc định sửa ancestry. Đổi flow tương lai cũng không
-tự sửa lịch sử cũ; backport một fix không hoàn thành bước reconcile.
-
-## 12. Hợp đồng thực thi dành cho AI agent
-
-### 12.1 Đầu vào cần xác định
+### 12.1 Đầu vào phải xác định
 
 | Trường | Nội dung |
 | --- | --- |
-| `intent` | `feature`, `release`, `hotfix`, `backport` hoặc `reconcile` |
-| `source_ref`, `source_sha` | Source và SHA được ghim |
-| `target_ref`, `target_sha` | Target và SHA trước thao tác |
-| `scope` | Hành vi/file/commit cần nhận; nội dung target phải giữ |
-| `release_context` | Cut SHA, production SHA, release đang UAT nếu có |
-| `authority` | Quyền sửa local, commit, push, tạo MR, merge, tag, deploy đã được cấp |
-| `validation` | Quality gate, test liên quan và bằng chứng cần báo cáo |
+| Intent | Feature, release, release fix, hotfix, backport hoặc reconcile |
+| Source/target | Ref và SHA trước thao tác |
+| Scope | Commit/hành vi cần nhận, nội dung target phải giữ |
+| Release context | Main base, production SHA, feature dependency, candidate SHA |
+| Authority | Quyền local edit, commit, push, MR, merge, tag, deploy đã cấp |
+| Validation | Quality gate và bằng chứng cần báo cáo |
 
-Agent tự thu thập dữ liệu bằng thao tác read-only. Chỉ hỏi khi thiếu quyết định ảnh
-hưởng scope hoặc authority; không yêu cầu người dùng cung cấp thông tin có thể kiểm tra từ Git.
+### 12.2 Quy tắc thực thi
 
-### 12.2 Thứ tự thực hiện
+1. Đọc AGENTS.md và convention liên quan. Không sửa trực tiếp managed files.
+2. Thu thập worktree status, remote refs, merge-base và phạm vi diff trước khi sửa.
+3. Rule cấm staging làm source merge, không tự cấm tạo branch từ staging. Theo flow
+   đề xuất, feature/release đi production dùng main base; kiểm tra ancestry nếu base khác.
+4. Feature dùng chung trên staging/release phải giữ commit SHA ổn định.
+5. Main/release có thay đổi khác thì review đầy đủ, không tự nhận scope chỉ một file.
+6. Chọn merge để đồng bộ lịch sử; chọn backport khi yêu cầu đúng một patch.
+7. Giữ thay đổi của người dùng; dùng worktree riêng khi cần.
+8. Ghi quyết định conflict, kiểm tra kết quả và quyền trước thao tác xuất bản.
+9. Báo SHA, delta file, kiểm tra và phần chưa hoàn tất.
 
-1. Đọc `AGENTS.md`, instruction theo thư mục và convention liên quan. Kiểm tra
-   `.vhm/managed-files.sha256` trước khi sửa tài liệu/cấu hình được quản lý.
-2. Kiểm tra worktree, fetch khi được phép và ghi SHA source/target.
-3. Phân loại intent: chỉ một fix thì backport; đồng bộ branch thì merge giữ ancestry.
-4. Chẩn đoán merge-base, patch tương đương và phạm vi nội dung trước khi sửa.
-5. Chuẩn bị thay đổi trong branch/worktree riêng khi cần; giữ thay đổi của người dùng.
-6. Resolve dựa trên mục tiêu hành vi, ghi quyết định cho từng conflict quan trọng.
-7. Kiểm tra diff cuối cùng, ancestry và quality gate phù hợp.
-8. Xuất bản đúng phần được cho phép; thay đổi setting, merge protected branch, tag và
-   deploy cần có authority tương ứng từ yêu cầu/quy trình đang áp dụng.
-9. Báo kết quả bằng SHA, file delta, kết quả kiểm tra và phần còn thiếu cụ thể.
+Không triển khai fix/business change nếu yêu cầu chỉ là giải thích hoặc chẩn đoán.
+Nếu sửa kiến trúc/business contract, đọc thêm các tài liệu AGENTS.md chỉ định.
 
-### 12.3 Điều kiện cần dừng thao tác phụ thuộc
+### 12.3 Trường hợp phải xử lý trước khi tiếp tục
 
-- Không rõ có được giữ/xóa một API, security fix hoặc migration sau conflict.
-- Source chứa thay đổi ngoài phạm vi người dùng yêu cầu.
-- Main không khớp production base cho hotfix.
-- Setting GitLab bắt buộc làm mất ancestry cần giữ.
-- Build/test thất bại hoặc executable quality gate thiếu.
-- Source/target thay đổi khiến kết quả đã review không còn áp dụng.
+- Branch source chứa lịch sử staging nhưng được đề xuất merge vào main/release.
+- Feature dùng chung đã bị squash/rebase thành các SHA khác nhau.
+- Không rõ quyết định giữ/xóa security fix, API hoặc migration trong conflict.
+- Main head không khớp production base của hotfix.
+- Setting GitLab làm mất ancestry cần giữ.
+- Quality gate thiếu hoặc thất bại.
+- Source/target SHA tiến thêm sau review.
 
-Agent vẫn có thể tiếp tục các kiểm tra độc lập an toàn; không tự mở rộng scope hoặc
-đánh dấu hoàn thành phần bị thiếu. Không bỏ test để vượt quality gate.
+Agent tiếp tục kiểm tra độc lập an toàn nhưng không tự mở rộng scope hoặc báo hoàn
+thành phần bị thiếu.
 
-Lưu ý hiện trạng: refs đã kiểm tra không track `mvnw`/Maven Wrapper, trong khi
-`AGENTS.md` yêu cầu `./mvnw -B verify`. Khi thực hiện code change phải kiểm tra lại và
-báo xung đột nếu còn thiếu; không tự thay bằng `mvn verify` hoặc cài wrapper để tuyên bố
-đã đạt gate mà chưa xử lý xung đột theo quy trình repository.
+Hiện trạng đã kiểm tra: repository không track Maven Wrapper trong khi AGENTS.md yêu
+cầu `./mvnw -B verify`. Với code change, phải kiểm tra lại và báo xung đột nếu còn;
+không tự thay gate bằng `mvn verify` hoặc bỏ test để tuyên bố đạt.
 
-## 13. Tiêu chí nghiệm thu và nội dung MR
+## 13. Nghiệm thu và mẫu MR
 
 ### 13.1 Checklist
 
-- [ ] Intent và source/target SHA được ghi rõ.
-- [ ] Release cut từ staging SHA đã chọn; không kéo feature release sau vào release đóng băng.
-- [ ] MR giữa branch lâu dài giữ ancestry; kiểm tra source SHA là ancestor của kết quả.
-- [ ] Feature mới trên target và fix hợp lệ trên source được giữ theo quyết định review.
-- [ ] Delta cuối cùng đúng scope; không dùng MR diff lớn/nhỏ làm bằng chứng duy nhất.
-- [ ] Không còn unmerged paths hoặc whitespace/conflict-marker lỗi trong file thay đổi.
-- [ ] Quality gate và kiểm tra liên quan đạt trên kết quả cuối cùng.
-- [ ] Source/target không tiến thêm mà chưa được đánh giá lại.
-- [ ] Backport có SHA nguồn; release/hotfix có MR đồng bộ hoặc quyết định ngoại lệ.
-- [ ] Tag/artifact/deploy status được ghi khi thuộc scope, không suy từ việc merge thành công.
+- [ ] Không có MR/merge dùng staging làm source sang feature/release/main.
+- [ ] Branch tạo từ staging nếu đi main/release đã được đánh giá toàn bộ ancestry;
+      không dùng tên helper để che các thay đổi ngoài scope.
+- [ ] Feature/release có main base phù hợp; danh sách dependency được review.
+- [ ] Feature được dùng chung trên staging/release giữ đúng commit SHA.
+- [ ] Release candidate thực tế được kiểm thử, không chỉ dựa vào staging test.
+- [ ] Merge giữ ancestry; source SHA là ancestor của result SHA.
+- [ ] Target feature và source fix được giữ theo quyết định review.
+- [ ] Delta cuối cùng đúng scope; không còn conflict.
+- [ ] Quality gate đạt trên kết quả cuối cùng.
+- [ ] Remote heads tiến thêm đã được đánh giá lại.
+- [ ] Release/hotfix được đồng bộ staging và release liên quan hoặc có ngoại lệ ghi rõ.
+- [ ] Tag/artifact/deploy có bằng chứng khi nằm trong scope được cấp.
 
-### 13.2 Mẫu MR release/back-merge
+### 13.2 Mẫu MR
 
 ```markdown
 ## Mục tiêu
 
-Đưa release/fix <phạm vi> từ <source> vào <target>, giữ ancestry.
+Đưa <feature/release/fix> từ <source> vào <target> theo rule staging chỉ nhận merge.
 
-## Refs được review
+## Refs và phạm vi
 
 - Source SHA:
 - Target SHA trước merge:
-- Cut SHA / production SHA nếu liên quan:
-- Kết quả merge SHA khi có:
+- Main/production base SHA:
+- Feature/fix SHA dùng chung nếu có:
+- Hành vi thêm/sửa/xóa:
+- Dependency và thay đổi ngoài phạm vi:
 
-## Delta và quyết định
+## Conflict và kiểm tra
 
-- Hành vi được thêm/sửa/xóa:
-- Nội dung target được giữ:
-- Conflict quan trọng và lý do resolve:
-- Khác biệt giữa release candidate và main sau merge:
-
-## Kiểm tra
-
-- Ancestry check:
+- Conflict quan trọng và quyết định resolve:
+- Result SHA:
 - Delta cuối cùng:
-- Quality gate và SHA được kiểm thử:
-- Pipeline / artifact nếu có:
+- Ancestry check:
+- Quality gate/pipeline và SHA được kiểm thử:
 
-## Đồng bộ và release
+## Release và đồng bộ
 
-- MR back-merge/backport liên quan:
-- Tag / artifact digest / deployment status nếu thuộc scope:
-```
-
-### 13.3 Mẫu báo cáo hoàn tất của agent
-
-```text
-Intent:
-Source ref + SHA:
-Target ref + SHA trước thao tác:
-Result branch + SHA:
-Nội dung thay đổi và phạm vi file:
-Conflict đã resolve + quyết định:
-Ancestry checks:
-Quality gate + test:
-MR / tag / artifact / deploy đã thực hiện trong scope:
-Phần chưa hoàn tất + nguyên nhân:
+- MR staging/release/main liên quan:
+- Tag/artifact/deploy status nếu thuộc scope:
+- Phần chưa hoàn tất:
 ```
 
 ## 14. Tài liệu repository liên quan

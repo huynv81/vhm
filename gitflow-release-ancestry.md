@@ -75,10 +75,42 @@ Nếu H chỉ sửa `pom.xml` và không có thay đổi khác, lần đồng b�
 Flow mới không tự sửa lịch sử đã lệch. Với repository hiện tại, cần một lần merge
 `main → staging`, review các khác biệt và resolve conflict để thiết lập lại nền chung.
 
+## Ví dụ: test 10 feature, chỉ release 5
+
+Giả sử F1…F10 được tạo từ main. Staging nhận cả 10 để test; release chỉ nhận F1…F5,
+giữ chính các commit feature đã merge vào staging.
+
+| Thời điểm | Main | Staging |
+| --- | --- | --- |
+| Test 10 feature | Code cũ | Code cũ + F1…F10 |
+| Release 5 feature vào main | Code cũ + F1…F5 | Code cũ + F1…F10 |
+| Main merge về staging | Code cũ + F1…F5 | Code cũ + F1…F10 |
+
+Git nhận ra F1…F5 đã có trên staging. Main chưa có F6…F10 không có nghĩa là yêu cầu
+xóa chúng; merge vẫn giữ các feature chưa release, trừ quyết định khác khi resolve.
+
+### Có thay đổi file hoặc conflict không?
+
+| Tình huống | Khi main → staging |
+| --- | --- |
+| Release chỉ nhận F1…F5, không có thay đổi hoặc resolution khác | Có thể không đổi nội dung file; merge vẫn nối lịch sử |
+| Release thêm fix R ở vùng staging chưa sửa | Thường tự nhận R, staging vẫn giữ F6…F10 |
+| Fix R và F6…F10 sửa cùng vùng theo cách khác nhau | Có thể conflict, cần quyết định nội dung cuối cùng |
+| Release và staging resolve conflict theo cách khác nhau | Có thể có delta hoặc conflict cần review |
+
+Ví dụ: nền chung có `timeout = 10`, F6 trên staging đổi thành `30`, fix trên release
+đổi thành `20`. Merge có thể conflict; reviewer phải quyết định giá trị cuối cùng.
+Giữ ancestry giúp nhận ra phần đã có, không bảo đảm mọi lần merge đều hết conflict.
+
+Trước release phải xác nhận F1…F5 có đủ dependency. Nếu F2 phụ thuộc F8, phải đưa cả F8
+vào release hoặc hoãn F2. Kiểm thử riêng release gồm các feature được chọn: test thành
+công trên staging với 10 feature chưa chứng minh tổ hợp 5 feature hoạt động đúng.
+
 ## Checklist cho developer và AI agent
 
 - Xác định đúng source/target và SHA đang review.
 - Chọn merge giữ ancestry; không bật squash cho các MR của flow.
+- Feature được chọn release phải có đủ dependency.
 - Kiểm thử release thực tế; test staging không thay thế test release chọn lọc.
 - Khi conflict, giữ feature staging và nhận fix main theo quyết định review.
 - Kiểm tra delta cuối cùng so với target trước merge.
